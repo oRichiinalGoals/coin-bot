@@ -32,13 +32,9 @@ cooldowns = {
     "test": {},
 }
 
-# resets with reset commands
 round_leaderboard = {}
-
-# persists while bot process is running
 all_time_leaderboard = {}
 
-# each tier uses: chance, min, max
 main_rates = {
     "tier1": {"chance": 95.0, "min": 0.1, "max": 0.1},
     "tier2": {"chance": 4.8, "min": 0.2, "max": 1.5},
@@ -64,6 +60,7 @@ def format_progress(progress: float) -> str:
 
 def validate_rates(rates: dict) -> None:
     total = sum(t["chance"] for t in rates.values())
+
     if abs(total - 100.0) > 0.001:
         raise ValueError(total)
 
@@ -156,6 +153,7 @@ async def handle_push(ctx, game: dict, mode: str, rates: dict, texts: list[str])
     amount, text = roll_from_rates(rates, texts)
 
     game["progress"] += amount
+
     if game["progress"] >= 100:
         game["progress"] = 100
         game["finished"] = True
@@ -217,6 +215,7 @@ async def push_test(ctx):
 @bot.command()
 async def status(ctx):
     status_text = "JACKPOT CLAIMED" if main_game["finished"] else "ACTIVE"
+
     await ctx.send(
         f"**Main Machine**\n"
         f"Status: **{status_text}**\n"
@@ -227,6 +226,7 @@ async def status(ctx):
 @bot.command(name="status-test")
 async def status_test(ctx):
     status_text = "JACKPOT CLAIMED" if test_game["finished"] else "ACTIVE"
+
     await ctx.send(
         f"**Test Machine**\n"
         f"Status: **{status_text}**\n"
@@ -234,9 +234,9 @@ async def status_test(ctx):
     )
 
 
-@bot.command()
+@bot.command(name="reset-pusher")
 @commands.has_permissions(manage_guild=True)
-async def reset(ctx):
+async def reset_pusher(ctx):
     main_game["progress"] = 0
     main_game["finished"] = False
     cooldowns["main"].clear()
@@ -265,14 +265,16 @@ async def leaderboard(ctx):
     sorted_entries = sorted(
         round_leaderboard.values(),
         key=lambda x: x["count"],
-        reverse=True
+        reverse=True,
     )
 
     lines = ["**Current Round Leaderboard**"]
+
     lines.extend(
         f"{i + 1}. {entry['name']} - {entry['count']}"
         for i, entry in enumerate(sorted_entries[:10])
     )
+
     await ctx.send("\n".join(lines))
 
 
@@ -285,14 +287,16 @@ async def all_time_leaderboard_command(ctx):
     sorted_entries = sorted(
         all_time_leaderboard.values(),
         key=lambda x: x["count"],
-        reverse=True
+        reverse=True,
     )
 
     lines = ["**All-Time Leaderboard**"]
+
     lines.extend(
         f"{i + 1}. {entry['name']} - {entry['count']}"
         for i, entry in enumerate(sorted_entries[:10])
     )
+
     await ctx.send("\n".join(lines))
 
 
@@ -317,9 +321,15 @@ async def rates_test(ctx):
 @commands.has_permissions(manage_guild=True)
 async def set_main_rates(
     ctx,
-    c1: float, min1: float, max1: float,
-    c2: float, min2: float, max2: float,
-    c3: float, min3: float, max3: float,
+    c1: float,
+    min1: float,
+    max1: float,
+    c2: float,
+    min2: float,
+    max2: float,
+    c3: float,
+    min3: float,
+    max3: float,
 ):
     new_rates = {
         "tier1": {"chance": c1, "min": min1, "max": max1},
@@ -331,14 +341,17 @@ async def set_main_rates(
         validate_rates(new_rates)
     except ValueError as e:
         total = c1 + c2 + c3
+
         if isinstance(e.args[0], (int, float)):
             diff = total - 100
+
             if diff > 0:
                 msg = f"❌ Rates not updated. Total = {total:.1f}% (over by {diff:.1f}%)"
             else:
                 msg = f"❌ Rates not updated. Total = {total:.1f}% (short by {abs(diff):.1f}%)"
         else:
             msg = f"❌ Rates not updated. {e.args[0]}"
+
         await ctx.send(msg + "\n" + format_rates_table("Attempted Main", new_rates))
         return
 
@@ -350,9 +363,15 @@ async def set_main_rates(
 @commands.has_permissions(manage_guild=True)
 async def set_test_rates(
     ctx,
-    c1: float, min1: float, max1: float,
-    c2: float, min2: float, max2: float,
-    c3: float, min3: float, max3: float,
+    c1: float,
+    min1: float,
+    max1: float,
+    c2: float,
+    min2: float,
+    max2: float,
+    c3: float,
+    min3: float,
+    max3: float,
 ):
     new_rates = {
         "tier1": {"chance": c1, "min": min1, "max": max1},
@@ -364,14 +383,17 @@ async def set_test_rates(
         validate_rates(new_rates)
     except ValueError as e:
         total = c1 + c2 + c3
+
         if isinstance(e.args[0], (int, float)):
             diff = total - 100
+
             if diff > 0:
                 msg = f"❌ Rates not updated. Total = {total:.1f}% (over by {diff:.1f}%)"
             else:
                 msg = f"❌ Rates not updated. Total = {total:.1f}% (short by {abs(diff):.1f}%)"
         else:
             msg = f"❌ Rates not updated. {e.args[0]}"
+
         await ctx.send(msg + "\n" + format_rates_table("Attempted Test", new_rates))
         return
 
@@ -411,6 +433,7 @@ async def set_progress(ctx, value: float):
         return
 
     main_game["finished"] = False
+
     await ctx.send(
         f"Main machine progress set to **{value:.1f}%**.\n"
         f"{format_progress(main_game['progress'])}"
@@ -436,6 +459,7 @@ async def set_progress_test(ctx, value: float):
         return
 
     test_game["finished"] = False
+
     await ctx.send(
         f"Test machine progress set to **{value:.1f}%**.\n"
         f"{format_progress(test_game['progress'])}"
@@ -454,7 +478,7 @@ async def help_commands(ctx):
         "!status\n"
         "!status-test\n\n"
         "RESET (ADMIN)\n"
-        "!reset\n"
+        "!reset-pusher\n"
         "!reset-test\n\n"
         "LEADERBOARD\n"
         "!leaderboard\n"
@@ -475,7 +499,7 @@ async def help_commands(ctx):
     )
 
 
-@reset.error
+@reset_pusher.error
 @reset_test.error
 @set_main_rates.error
 @set_test_rates.error
