@@ -184,16 +184,9 @@ async def on_ready():
 
 @bot.command()
 async def push(ctx):
-    await handle_push(
-        ctx,
-        main_game,
-        "main",
-        main_rates,
-        [
-            "You play and progress is made....even though it doesn't look like it",
-            "You play and you can see progress! Though its small",
-            "You play and you see major progress!",
-        ],
+    await ctx.send(
+        "This machine is out of order. While we work on fixing it, "
+        "please find other games at the casino to play."
     )
 
 
