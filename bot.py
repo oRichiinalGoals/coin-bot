@@ -1800,43 +1800,61 @@ async def inventory(ctx):
     await send_long_message(ctx, format_inventory_message(ctx.author))
 
 
-def format_admin_inventory_support_message():
-    commands_list = [
-        ("!inventory", "Displays your persistent numbered inventory and bag capacity."),
-        ("!discard 2,3,5", "Discards one or more slots. Spaces around commas do not matter."),
-        ("!delete 2,3,5", "Alias for !discard."),
-        ("!discard 100", "Discards a newly found item when the inventory is full."),
-        ("!sort az", "Sorts occupied inventory slots alphabetically A–Z."),
-        ("!admin-inventory @member", "Displays another player's inventory."),
-        ("!admin-discard @member 2,3,5", "Deletes one or more items from another tribute's inventory."),
-        ("!admin-delete @member 2,3,5", "Alias for !admin-discard."),
-        ("!admin-add @member item-id,item-id", "Adds catalog items by unique identifier."),
-        ("!admin-item-ids", "Displays the currently available unique item identifiers."),
-        ("!set-inventory number", "Sets the default bag size for new tribute records in this server."),
-        ("!admin-inventory support", "Displays this inventory command menu."),
-    ]
+def format_admin_inventory_support_message(guild_id):
+    current_default = get_guild_default_bag_total(guild_id)
 
-    message = "**Admin Inventory Support Commands**\n\n"
-    message += "```txt\n"
-    message += f"{'Command':<42} Description\n"
-    message += "-" * 94 + "\n"
-
-    for command_name, description in commands_list:
-        message += f"{command_name:<42} {description}\n"
-
-    message += "```"
-    return message
+    return (
+        "**📦 ADMIN INVENTORY SUPPORT**\n\n"
+        "**👤 PLAYER COMMANDS**\n"
+        "`!inventory`\n"
+        "View your inventory and bag capacity.\n\n"
+        "`!discard <slot[,slot...]>`\n"
+        "Discard one or more inventory slots.\n"
+        "Examples: `!discard 4` or `!discard 2, 3, 5, 11`\n\n"
+        "`!delete <slot[,slot...]>`\n"
+        "Alias for `!discard`.\n\n"
+        "`!sort az`\n"
+        "Sort occupied inventory slots alphabetically A–Z.\n\n"
+        "**🛡️ ADMIN COMMANDS**\n"
+        "`!admin-inventory @player`\n"
+        "View another tribute's inventory.\n\n"
+        "`!admin-add @player item-id[,item-id...]`\n"
+        "Add one or more catalog items by unique identifier.\n"
+        "Example: `!admin-add @Richard rusty-knife, old-purse`\n\n"
+        "`!admin-delete @player <slot[,slot...]>`\n"
+        "Delete one or more slots from another tribute's inventory.\n\n"
+        "`!admin-discard @player <slot[,slot...]>`\n"
+        "Alias for `!admin-delete`.\n\n"
+        "`!admin-item-ids`\n"
+        "View the item identifiers currently available to admins.\n\n"
+        "**⚙️ INVENTORY SETTINGS**\n"
+        "`!set-inventory <number>`\n"
+        "Set the default inventory size for new tributes in this server.\n"
+        f"Current default: **{current_default} slots**\n\n"
+        "**ℹ️ NOTES**\n"
+        "• Multiple slots or item IDs may be separated by commas.\n"
+        "• Spaces around commas are ignored.\n"
+        "• Slot `100` is a newly found item waiting for a full inventory to be resolved.\n"
+        "• New items fill the lowest available slot."
+    )
 
 
 @bot.command(name="admin-inventory")
-@commands.has_permissions(manage_guild=True)
 async def admin_inventory(ctx, *, target: str = None):
+    if ctx.guild is None:
+        await ctx.send("This command can only be used inside a server.")
+        return
+
+    if not ctx.author.guild_permissions.manage_guild:
+        await ctx.send("You need the **Manage Server** permission to use `!admin-inventory`.")
+        return
+
     if target is None:
         await ctx.send("Use `!admin-inventory @username` or `!admin-inventory support`.")
         return
 
     if target.strip().lower() in {"support", "help", "commands"}:
-        await send_long_message(ctx, format_admin_inventory_support_message())
+        await ctx.send("Inventory help moved to `!admin-support inventory`.")
         return
 
     try:
@@ -2503,7 +2521,22 @@ async def admin_broadcast(ctx):
 
 @bot.command(name="Admin-Support")
 @commands.has_permissions(manage_guild=True)
-async def admin_support(ctx):
+async def admin_support(ctx, *, topic: str = None):
+    if topic is not None:
+        cleaned_topic = clean_name(topic)
+        if cleaned_topic in {"inventory", "inventories", "inv"}:
+            await send_long_message(
+                ctx,
+                format_admin_inventory_support_message(ctx.guild.id),
+            )
+            return
+
+        await ctx.send(
+            "That admin support section does not exist yet. "
+            "Available section: `!admin-support inventory`."
+        )
+        return
+
     sections = {
         "PLAYER COMMANDS": [
             ("!move Room Name", "Move rooms. Same-island movement defaults to 30 minutes; island travel uses the global cooldown."),
@@ -2547,7 +2580,7 @@ async def admin_support(ctx):
             ("!ping", "Tests bot connection."),
             ("!roles", "Displays all Discord roles."),
             ("!Admin-Support", "Displays this general admin menu."),
-            ("!admin-inventory support", "Displays all inventory-related player and admin commands."),
+            ("!Admin-Support Inventory", "Displays the mobile-friendly inventory support menu."),
         ],
     }
 
