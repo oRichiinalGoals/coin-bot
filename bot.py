@@ -38,6 +38,7 @@ LOCATION_ENTRY_TIMES = {}
 ACTIVE_ACTION_TASKS = {}
 
 DEFAULT_BAG_TOTAL = 15
+INVENTORY_UNDO_WINDOW_SECONDS = 30 * 60
 DATA_DIRECTORY = Path(__file__).resolve().parent / "data"
 DATABASE_PATH = DATA_DIRECTORY / "hunger_games.db"
 
@@ -87,6 +88,17 @@ def initialize_database():
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 item_json TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS inventory_undo (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                undo_json TEXT NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
             )
             """
@@ -292,6 +304,50 @@ def clear_pending_item(guild_id, user_id):
     with get_database_connection() as connection:
         connection.execute(
             "DELETE FROM pending_items WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+
+
+def save_inventory_undo(guild_id, user_id, undo_data):
+    with get_database_connection() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO inventory_undo
+            (guild_id, user_id, created_at, undo_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (guild_id, user_id, time.time(), json.dumps(undo_data)),
+        )
+
+
+def get_inventory_undo(guild_id, user_id):
+    with get_database_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT created_at, undo_json
+            FROM inventory_undo
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    try:
+        undo_data = json.loads(row["undo_json"])
+    except json.JSONDecodeError:
+        clear_inventory_undo(guild_id, user_id)
+        return None
+
+    undo_data["created_at"] = float(row["created_at"])
+    return undo_data
+
+
+def clear_inventory_undo(guild_id, user_id):
+    with get_database_connection() as connection:
+        connection.execute(
+            "DELETE FROM inventory_undo WHERE guild_id = ? AND user_id = ?",
             (guild_id, user_id),
         )
 
@@ -1813,6 +1869,8 @@ def format_admin_inventory_support_message(guild_id):
         "Examples: `!discard 4` or `!discard 2, 3, 5, 11`\n\n"
         "`!delete <slot[,slot...]>`\n"
         "Alias for `!discard`.\n\n"
+        "`!undo`\n"
+        "Restore your most recent discard/delete action within 30 minutes.\n\n"
         "`!sort az`\n"
         "Sort occupied inventory slots alphabetically A–Z.\n\n"
         "**🛡️ ADMIN COMMANDS**\n"
@@ -1900,6 +1958,12 @@ async def discard_slots_for_member(ctx, member, raw_slots, admin_action=False):
         if len(slots) != 1 or pending is None:
             await ctx.send("Slot **100** can only be discarded by itself when a new item is pending.")
             return
+        if not admin_action:
+            save_inventory_undo(
+                guild_id,
+                user_id,
+                {"type": "discard_pending", "pending_item": pending},
+            )
         clear_pending_item(guild_id, user_id)
         prefix = f"{member.mention}'s " if admin_action else "The "
         await ctx.send(f"🗑️ {prefix}new item in slot **100** was discarded.")
@@ -1912,7 +1976,7 @@ async def discard_slots_for_member(ctx, member, raw_slots, admin_action=False):
         if slot not in inventory:
             ignored.append(slot)
             continue
-        discarded.append((slot, inventory[slot].get("name", "item")))
+        discarded.append((slot, inventory[slot]))
         delete_inventory_item(guild_id, user_id, slot)
 
     if pending is not None:
@@ -1923,11 +1987,28 @@ async def discard_slots_for_member(ctx, member, raw_slots, admin_action=False):
         save_inventory_item(guild_id, user_id, slot, pending)
         clear_pending_item(guild_id, user_id)
 
+    if discarded and not admin_action:
+        save_inventory_undo(
+            guild_id,
+            user_id,
+            {
+                "type": "replace_pending" if pending is not None else "discard_slots",
+                "discarded": [
+                    {"slot": slot, "item": item_data}
+                    for slot, item_data in discarded
+                ],
+                "moved_pending_item": pending,
+            },
+        )
+
     lines = []
     if discarded:
         owner = f" from {member.mention}'s inventory" if admin_action else ""
         lines.append("🗑️ Discarded" + owner + ":")
-        lines.extend(f"• Slot **{slot}** — **{name}**" for slot, name in discarded)
+        lines.extend(
+            f"• Slot **{slot}** — **{item_data.get('name', 'item')}**"
+            for slot, item_data in discarded
+        )
     if pending is not None and discarded:
         lines.append(
             f"✅ **{pending.get('name', 'New item')}** was placed into slot **{slots[0]}**."
@@ -1941,6 +2022,114 @@ async def discard_slots_for_member(ctx, member, raw_slots, admin_action=False):
 @bot.command(name="discard", aliases=["delete"])
 async def discard(ctx, *, slots: str = None):
     await discard_slots_for_member(ctx, ctx.author, slots)
+
+
+@bot.command(name="undo")
+async def undo_inventory_discard(ctx):
+    if ctx.guild is None:
+        await ctx.send("This command can only be used inside a server.")
+        return
+
+    guild_id = ctx.guild.id
+    user_id = ctx.author.id
+    undo_data = get_inventory_undo(guild_id, user_id)
+
+    if undo_data is None:
+        await ctx.send(
+            "You do not have a recent inventory discard to undo. "
+            "Please ping the Gamemakers for assistance."
+        )
+        return
+
+    elapsed = time.time() - undo_data.get("created_at", 0)
+    if elapsed > INVENTORY_UNDO_WINDOW_SECONDS:
+        clear_inventory_undo(guild_id, user_id)
+        await ctx.send(
+            "Your 30-minute undo window has expired. "
+            "Please ping the Gamemakers for assistance."
+        )
+        return
+
+    undo_type = undo_data.get("type")
+
+    if undo_type == "discard_pending":
+        if get_pending_item(guild_id, user_id) is not None:
+            await ctx.send(
+                "I cannot safely restore that item because slot 100 is already occupied. "
+                "Please ping the Gamemakers for assistance."
+            )
+            return
+        save_pending_item(guild_id, user_id, undo_data["pending_item"])
+        clear_inventory_undo(guild_id, user_id)
+        await ctx.send("✅ Your discarded pending item was restored to slot **100**.")
+        return
+
+    discarded_entries = undo_data.get("discarded", [])
+    if not discarded_entries:
+        clear_inventory_undo(guild_id, user_id)
+        await ctx.send(
+            "That undo record could not be restored. Please ping the Gamemakers for assistance."
+        )
+        return
+
+    inventory = get_inventory_items(guild_id, user_id)
+
+    if undo_type == "replace_pending":
+        original_slot = int(discarded_entries[0]["slot"])
+        moved_item = undo_data.get("moved_pending_item")
+        current_item = inventory.get(original_slot)
+
+        if current_item != moved_item or get_pending_item(guild_id, user_id) is not None:
+            await ctx.send(
+                "I cannot safely reverse that replacement because the inventory changed afterward. "
+                "Please ping the Gamemakers for assistance."
+            )
+            return
+
+        delete_inventory_item(guild_id, user_id, original_slot)
+        save_inventory_item(
+            guild_id, user_id, original_slot, discarded_entries[0]["item"]
+        )
+        save_pending_item(guild_id, user_id, moved_item)
+        clear_inventory_undo(guild_id, user_id)
+        await ctx.send(
+            f"✅ Slot **{original_slot}** was restored, and the newer item returned to slot **100**."
+        )
+        return
+
+    bag_total = get_bag_total(guild_id, user_id)
+    occupied = set(inventory)
+    planned = []
+
+    for entry in discarded_entries:
+        preferred_slot = int(entry["slot"])
+        destination = None
+        if 1 <= preferred_slot <= bag_total and preferred_slot not in occupied:
+            destination = preferred_slot
+        else:
+            for candidate in range(1, bag_total + 1):
+                if candidate not in occupied:
+                    destination = candidate
+                    break
+
+        if destination is None:
+            await ctx.send(
+                "I cannot safely restore every discarded item because your inventory is now full. "
+                "Please ping the Gamemakers for assistance."
+            )
+            return
+
+        occupied.add(destination)
+        planned.append((destination, entry["item"]))
+
+    for destination, item_data in planned:
+        save_inventory_item(guild_id, user_id, destination, item_data)
+
+    clear_inventory_undo(guild_id, user_id)
+    restored_slots = ", ".join(str(slot) for slot, _ in planned)
+    await ctx.send(
+        f"✅ Your last discard/delete action was undone. Restored slot(s): **{restored_slots}**."
+    )
 
 
 @bot.command(name="sort")
