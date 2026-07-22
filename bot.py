@@ -7,6 +7,7 @@ import asyncio
 import textwrap
 import json
 import sqlite3
+import re
 from pathlib import Path
 
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -53,6 +54,14 @@ def initialize_database():
     with get_database_connection() as connection:
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                guild_id INTEGER PRIMARY KEY,
+                default_bag_total INTEGER NOT NULL DEFAULT 15
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS players (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -84,16 +93,44 @@ def initialize_database():
         )
 
 
+def get_guild_default_bag_total(guild_id):
+    with get_database_connection() as connection:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO guild_settings (guild_id, default_bag_total)
+            VALUES (?, ?)
+            """,
+            (guild_id, DEFAULT_BAG_TOTAL),
+        )
+        row = connection.execute(
+            "SELECT default_bag_total FROM guild_settings WHERE guild_id = ?",
+            (guild_id,),
+        ).fetchone()
+    return int(row["default_bag_total"])
+
+
+def set_guild_default_bag_total(guild_id, bag_total):
+    with get_database_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO guild_settings (guild_id, default_bag_total)
+            VALUES (?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET default_bag_total = excluded.default_bag_total
+            """,
+            (guild_id, bag_total),
+        )
+
+
 def ensure_player_record(guild_id, user_id):
+    default_bag_total = get_guild_default_bag_total(guild_id)
     with get_database_connection() as connection:
         connection.execute(
             """
             INSERT OR IGNORE INTO players (guild_id, user_id, bag_total)
             VALUES (?, ?, ?)
             """,
-            (guild_id, user_id, DEFAULT_BAG_TOTAL),
+            (guild_id, user_id, default_bag_total),
         )
-
 
 def get_bag_total(guild_id, user_id):
     ensure_player_record(guild_id, user_id)
@@ -257,6 +294,81 @@ def clear_pending_item(guild_id, user_id):
             "DELETE FROM pending_items WHERE guild_id = ? AND user_id = ?",
             (guild_id, user_id),
         )
+
+
+def parse_inventory_slots(raw_slots):
+    if raw_slots is None:
+        return [], []
+
+    tokens = [token.strip() for token in raw_slots.split(",")]
+    slots = []
+    invalid_tokens = []
+
+    for token in tokens:
+        if not token:
+            continue
+        if not token.isdigit():
+            invalid_tokens.append(token)
+            continue
+        slot = int(token)
+        if slot not in slots:
+            slots.append(slot)
+
+    return slots, invalid_tokens
+
+
+def sort_inventory_alphabetically(guild_id, user_id):
+    inventory = get_inventory_items(guild_id, user_id)
+    sorted_items = sorted(
+        inventory.values(),
+        key=lambda item: (item.get("name") or item.get("item") or "").casefold(),
+    )
+
+    with get_database_connection() as connection:
+        connection.execute(
+            "DELETE FROM inventory_items WHERE guild_id = ? AND user_id = ?",
+            (guild_id, user_id),
+        )
+        for slot, item_data in enumerate(sorted_items, start=1):
+            connection.execute(
+                """
+                INSERT INTO inventory_items (guild_id, user_id, slot, item_json)
+                VALUES (?, ?, ?, ?)
+                """,
+                (guild_id, user_id, slot, json.dumps(item_data)),
+            )
+
+
+def make_item_identifier(name):
+    identifier = re.sub(r"[^a-z0-9]+", "-", name.casefold()).strip("-")
+    return identifier or "unknown-item"
+
+
+def build_item_identifier_catalog():
+    catalog = {}
+
+    def add_entry(item_data, source_type):
+        name = item_data.get("name") or item_data.get("item")
+        if not name or name == "Island Specific":
+            return
+        identifier = make_item_identifier(name)
+        catalog.setdefault(identifier, normalize_inventory_item(item_data, source_type))
+
+    for item_data in ITEM_LOOT_TABLE.values():
+        add_entry(item_data, "item")
+
+    for island_items in ISLAND_SPECIFIC_ITEMS.values():
+        for name in island_items.values():
+            add_entry({"item": name, "amount": "1", "description": "Island-specific item."}, "item")
+
+    for item_data in FOOD_LOOT_TABLE.values():
+        add_entry(item_data, "food")
+
+    for island_food in ISLAND_SPECIFIC_FOOD.values():
+        for item_data in island_food.values():
+            add_entry(item_data, "food")
+
+    return catalog
 
 
 def format_inventory_item_line(slot, item_data):
@@ -1688,59 +1800,226 @@ async def inventory(ctx):
     await send_long_message(ctx, format_inventory_message(ctx.author))
 
 
+def format_admin_inventory_support_message():
+    commands_list = [
+        ("!inventory", "Displays your persistent numbered inventory and bag capacity."),
+        ("!discard 2,3,5", "Discards one or more slots. Spaces around commas do not matter."),
+        ("!delete 2,3,5", "Alias for !discard."),
+        ("!discard 100", "Discards a newly found item when the inventory is full."),
+        ("!sort az", "Sorts occupied inventory slots alphabetically A–Z."),
+        ("!admin-inventory @member", "Displays another player's inventory."),
+        ("!admin-discard @member 2,3,5", "Deletes one or more items from another tribute's inventory."),
+        ("!admin-delete @member 2,3,5", "Alias for !admin-discard."),
+        ("!admin-add @member item-id,item-id", "Adds catalog items by unique identifier."),
+        ("!admin-item-ids", "Displays the currently available unique item identifiers."),
+        ("!set-inventory number", "Sets the default bag size for new tribute records in this server."),
+        ("!admin-inventory support", "Displays this inventory command menu."),
+    ]
+
+    message = "**Admin Inventory Support Commands**\n\n"
+    message += "```txt\n"
+    message += f"{'Command':<42} Description\n"
+    message += "-" * 94 + "\n"
+
+    for command_name, description in commands_list:
+        message += f"{command_name:<42} {description}\n"
+
+    message += "```"
+    return message
+
+
 @bot.command(name="admin-inventory")
 @commands.has_permissions(manage_guild=True)
-async def admin_inventory(ctx, member: discord.Member = None):
-    if member is None:
-        await ctx.send("Use `!admin-inventory @username`.")
+async def admin_inventory(ctx, *, target: str = None):
+    if target is None:
+        await ctx.send("Use `!admin-inventory @username` or `!admin-inventory support`.")
         return
+
+    if target.strip().lower() in {"support", "help", "commands"}:
+        await send_long_message(ctx, format_admin_inventory_support_message())
+        return
+
+    try:
+        member = await commands.MemberConverter().convert(ctx, target.strip())
+    except commands.MemberNotFound:
+        await ctx.send(
+            "I couldn't find that member. Use `!admin-inventory @username` "
+            "or `!admin-inventory support`."
+        )
+        return
+
     await send_long_message(ctx, format_inventory_message(member))
 
 
-@bot.command(name="discard", aliases=["delete"])
-async def discard(ctx, slot: int = None):
-    member = ctx.author
+async def discard_slots_for_member(ctx, member, raw_slots, admin_action=False):
     guild_id = ctx.guild.id
     user_id = member.id
     inventory = get_inventory_items(guild_id, user_id)
     pending = get_pending_item(guild_id, user_id)
+    slots, invalid_tokens = parse_inventory_slots(raw_slots)
 
-    if slot is None:
-        await ctx.send("Use `!discard <slot number>`.")
+    if not slots and not invalid_tokens:
+        usage = "!admin-discard @username 2,3,5" if admin_action else "!discard 2,3,5"
+        await ctx.send(f"Use `{usage}`.")
         return
 
-    if slot == 100:
-        if pending is None:
-            await ctx.send(
-                "Please only discard using a number from your inventory list, "
-                "or 100 for the new item"
-            )
+    if invalid_tokens:
+        await ctx.send(
+            "⚠️ These entries were not valid slot numbers: "
+            + ", ".join(f"`{token}`" for token in invalid_tokens)
+        )
+        if not slots:
             return
 
-        clear_pending_item(guild_id, user_id)
-        await ctx.send("🗑️ The new item in slot **100** was discarded.")
-        return
-
-    if slot not in inventory:
+    if pending is not None and len(slots) != 1:
         await ctx.send(
-            "Please only discard using a number from your inventory list, "
-            "or 100 for the new item"
+            "You have a new item waiting in slot **100**. Use exactly one slot number "
+            "to replace that item, or use `!discard 100` to reject the new item."
         )
         return
 
-    discarded_name = inventory[slot].get("name", "item")
-    delete_inventory_item(guild_id, user_id, slot)
+    if 100 in slots:
+        if len(slots) != 1 or pending is None:
+            await ctx.send("Slot **100** can only be discarded by itself when a new item is pending.")
+            return
+        clear_pending_item(guild_id, user_id)
+        prefix = f"{member.mention}'s " if admin_action else "The "
+        await ctx.send(f"🗑️ {prefix}new item in slot **100** was discarded.")
+        return
+
+    discarded = []
+    ignored = []
+
+    for slot in slots:
+        if slot not in inventory:
+            ignored.append(slot)
+            continue
+        discarded.append((slot, inventory[slot].get("name", "item")))
+        delete_inventory_item(guild_id, user_id, slot)
 
     if pending is not None:
+        slot = slots[0]
+        if not discarded:
+            await ctx.send(f"Slot **{slot}** is empty or invalid, so the pending item was not moved.")
+            return
         save_inventory_item(guild_id, user_id, slot, pending)
         clear_pending_item(guild_id, user_id)
-        await ctx.send(
-            f"🗑️ **{discarded_name}** was discarded from slot **{slot}**.\n"
-            f"✅ **{pending.get('name', 'New item')}** was placed into slot **{slot}**."
+
+    lines = []
+    if discarded:
+        owner = f" from {member.mention}'s inventory" if admin_action else ""
+        lines.append("🗑️ Discarded" + owner + ":")
+        lines.extend(f"• Slot **{slot}** — **{name}**" for slot, name in discarded)
+    if pending is not None and discarded:
+        lines.append(
+            f"✅ **{pending.get('name', 'New item')}** was placed into slot **{slots[0]}**."
         )
+    if ignored:
+        lines.append("⚠️ Ignored empty or invalid slots: " + ", ".join(map(str, ignored)))
+
+    await ctx.send("\n".join(lines) if lines else "No inventory items were discarded.")
+
+
+@bot.command(name="discard", aliases=["delete"])
+async def discard(ctx, *, slots: str = None):
+    await discard_slots_for_member(ctx, ctx.author, slots)
+
+
+@bot.command(name="sort")
+async def sort_inventory(ctx, mode: str = None):
+    if mode is None or clean_name(mode) != "az":
+        await ctx.send("Use `!sort az` to sort your inventory alphabetically.")
+        return
+    if player_has_pending_item(ctx.author):
+        await ctx.send("You have to sort out your inventory first!")
         return
 
-    await ctx.send(f"🗑️ **{discarded_name}** was discarded from slot **{slot}**.")
+    sort_inventory_alphabetically(ctx.guild.id, ctx.author.id)
+    await ctx.send("✅ Inventory sorted alphabetically A–Z.")
+
+
+@bot.command(name="set-inventory")
+@commands.has_permissions(manage_guild=True)
+async def set_inventory(ctx, number: int = None):
+    if number is None:
+        current = get_guild_default_bag_total(ctx.guild.id)
+        await ctx.send(
+            f"The default inventory size for new tributes is **{current}**. "
+            "Use `!set-inventory number` to change it."
+        )
+        return
+    if number < 1 or number > 100:
+        await ctx.send("Inventory size must be between **1** and **100** slots.")
+        return
+
+    set_guild_default_bag_total(ctx.guild.id, number)
+    await ctx.send(
+        f"✅ The default inventory size for **new tribute records** is now **{number}** slots. "
+        "Existing tribute inventories were not resized."
+    )
+
+
+@bot.command(name="admin-discard", aliases=["admin-delete"])
+@commands.has_permissions(manage_guild=True)
+async def admin_discard(ctx, member: discord.Member = None, *, slots: str = None):
+    if member is None or slots is None:
+        await ctx.send("Use `!admin-discard @username 2,3,5`.")
+        return
+    await discard_slots_for_member(ctx, member, slots, admin_action=True)
+
+
+@bot.command(name="admin-add")
+@commands.has_permissions(manage_guild=True)
+async def admin_add(ctx, member: discord.Member = None, *, identifiers: str = None):
+    if member is None or not identifiers:
+        await ctx.send("Use `!admin-add @username item-identifier, another-identifier`.")
+        return
+
+    catalog = build_item_identifier_catalog()
+    requested = [part.strip().casefold() for part in identifiers.split(",") if part.strip()]
+    added = []
+    pending_names = []
+    unknown = []
+
+    for identifier in requested:
+        item_template = catalog.get(identifier)
+        if item_template is None:
+            unknown.append(identifier)
+            continue
+
+        item_data = json.loads(json.dumps(item_template))
+        empty_slot = find_first_empty_inventory_slot(ctx.guild.id, member.id)
+        if empty_slot is not None:
+            save_inventory_item(ctx.guild.id, member.id, empty_slot, item_data)
+            added.append((empty_slot, item_data["name"]))
+            continue
+
+        if get_pending_item(ctx.guild.id, member.id) is None:
+            save_pending_item(ctx.guild.id, member.id, item_data)
+            pending_names.append(item_data["name"])
+        else:
+            unknown.append(f"{identifier} (inventory and pending slot full)")
+
+    lines = []
+    if added:
+        lines.append(f"✅ Added to {member.mention}'s inventory:")
+        lines.extend(f"• Slot **{slot}** — **{name}**" for slot, name in added)
+    if pending_names:
+        lines.append("📦 Added to pending slot **100**: " + ", ".join(pending_names))
+    if unknown:
+        lines.append("⚠️ Not added: " + ", ".join(f"`{value}`" for value in unknown))
+    await ctx.send("\n".join(lines) if lines else "No items were added.")
+
+
+@bot.command(name="admin-item-ids")
+@commands.has_permissions(manage_guild=True)
+async def admin_item_ids(ctx):
+    catalog = build_item_identifier_catalog()
+    lines = [f"{identifier} — {item['name']}" for identifier, item in sorted(catalog.items())]
+    await send_long_message(
+        ctx,
+        "**Available Item Identifiers**\n```txt\n" + "\n".join(lines) + "\n```",
+    )
 
 
 @bot.command(name="item-cooldown")
@@ -2236,14 +2515,6 @@ async def admin_support(ctx):
             ("!reset-action", "Cancels your own active action. Tributes cannot reset another player."),
         ],
 
-        "INVENTORY": [
-            ("!inventory", "Displays your persistent numbered inventory and bag capacity."),
-            ("!discard slot", "Discards an item. If a new item is pending, it replaces the discarded slot."),
-            ("!delete slot", "Alias for !discard."),
-            ("!discard 100", "Discards a newly found item when the inventory is full."),
-            ("!admin-inventory @member", "Displays another player's inventory. Manage Server permission required."),
-        ],
-
         "ADMIN SEARCH COMMANDS": [
             ("!search-item-bypass", "Instant item roll that ignores cooldown."),
             ("!search-food-bypass", "Instant food roll that ignores cooldown."),
@@ -2275,7 +2546,8 @@ async def admin_support(ctx):
         "UTILITY": [
             ("!ping", "Tests bot connection."),
             ("!roles", "Displays all Discord roles."),
-            ("!Admin-Support", "Displays this menu."),
+            ("!Admin-Support", "Displays this general admin menu."),
+            ("!admin-inventory support", "Displays all inventory-related player and admin commands."),
         ],
     }
 
