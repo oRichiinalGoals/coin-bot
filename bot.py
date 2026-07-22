@@ -1856,11 +1856,11 @@ async def inventory(ctx):
     await send_long_message(ctx, format_inventory_message(ctx.author))
 
 
-def format_admin_inventory_support_message(guild_id):
+def format_inventory_support_message(guild_id):
     current_default = get_guild_default_bag_total(guild_id)
 
     return (
-        "**📦 ADMIN INVENTORY SUPPORT**\n\n"
+        "**📦 INVENTORY SUPPORT**\n\n"
         "**👤 PLAYER COMMANDS**\n"
         "`!inventory`\n"
         "View your inventory and bag capacity.\n\n"
@@ -1908,11 +1908,11 @@ async def admin_inventory(ctx, *, target: str = None):
         return
 
     if target is None:
-        await ctx.send("Use `!admin-inventory @username` or `!admin-inventory support`.")
+        await ctx.send("Use `!admin-inventory @username`.")
         return
 
     if target.strip().lower() in {"support", "help", "commands"}:
-        await ctx.send("Inventory help moved to `!admin-support inventory`.")
+        await ctx.send("Inventory help moved to `!inventory-support`.")
         return
 
     try:
@@ -1920,7 +1920,7 @@ async def admin_inventory(ctx, *, target: str = None):
     except commands.MemberNotFound:
         await ctx.send(
             "I couldn't find that member. Use `!admin-inventory @username` "
-            "or `!admin-inventory support`."
+            "."
         )
         return
 
@@ -2708,86 +2708,221 @@ async def admin_broadcast(ctx):
 
 
 
-@bot.command(name="Admin-Support")
-@commands.has_permissions(manage_guild=True)
-async def admin_support(ctx, *, topic: str = None):
-    if topic is not None:
-        cleaned_topic = clean_name(topic)
-        if cleaned_topic in {"inventory", "inventories", "inv"}:
-            await send_long_message(
-                ctx,
-                format_admin_inventory_support_message(ctx.guild.id),
-            )
-            return
+def format_support_page(title, sections):
+    """Build a compact, mobile-friendly support page."""
+    lines = [f"**{title}**", ""]
 
-        await ctx.send(
-            "That admin support section does not exist yet. "
-            "Available section: `!admin-support inventory`."
-        )
-        return
+    for heading, entries in sections:
+        lines.append(f"**{heading}**")
+        for command_name, description in entries:
+            lines.append(f"`{command_name}`")
+            lines.append(description)
+            lines.append("")
 
-    sections = {
-        "PLAYER COMMANDS": [
-            ("!move Room Name", "Move rooms. Same-island movement defaults to 30 minutes; island travel uses the global cooldown."),
-            ("!search-item", "Search for items using the shared action timer."),
-            ("!search-food", "Search for food using the shared action timer."),
-            ("!search-water", "Search for water using the shared action timer."),
-            ("!craft", "Craft using the shared action timer."),
-            ("!sleep", "Sleep using the current global cooldown and receive +3 sleep."),
-            ("!reset-action", "Cancels your own active action. Tributes cannot reset another player."),
+    return "\n".join(lines).rstrip()
+
+
+@bot.command(name="inventory-support")
+async def inventory_support(ctx):
+    await send_long_message(ctx, format_inventory_support_message(ctx.guild.id))
+
+
+@bot.command(name="item-support")
+async def item_support(ctx):
+    message = format_support_page(
+        "🧰 ITEM SUPPORT",
+        [
+            (
+                "🛡️ ADMIN COMMANDS",
+                [
+                    ("!item-table", "View the complete item loot table."),
+                    ("!admin-item-ids", "View item identifiers available to admins."),
+                    (
+                        "!admin-add @player item-id[,item-id...]",
+                        "Add one or more catalog items to a tribute's inventory.",
+                    ),
+                ],
+            ),
+            (
+                "ℹ️ NOTES",
+                [
+                    (
+                        "Item IDs",
+                        "Separate multiple identifiers with commas. Spaces around commas are ignored.",
+                    ),
+                ],
+            ),
         ],
-
-        "ADMIN SEARCH COMMANDS": [
-            ("!search-item-bypass", "Instant item roll that ignores cooldown."),
-            ("!search-food-bypass", "Instant food roll that ignores cooldown."),
-            ("!reset-action @member", "Clears another player's active action. Manage Server permission required."),
-        ],
-
-        "ADMIN SETTINGS": [
-            ("!item-cooldown seconds", "Updates the global cooldown for movement, searching, crafting, and sleep."),
-            ("!item-cooldown reset", "Resets movement/search/craft, sleep, and same-island movement cooldowns to defaults."),
-        ],
-
-        "ADMIN TABLES": [
-            ("!item-table", "Displays the item loot table."),
-        ],
-
-        "ADMIN ROOM CONTROLS": [
-            ("!Admin-Disable Room Name", "Disables a room."),
-            ("!Admin-Enable Room Name", "Enables a room."),
-            ("!Admin-Room-Status", "Displays room statuses."),
-            ("!Admin-Broadcast", "Shows all Tribute locations and ailments."),
-        ],
-
-        "ADMIN BRIDGE CONTROLS": [
-            ("!Admin-Bridge-Enable Island A -> Island B", "Enables a bridge."),
-            ("!Admin-Bridge-Disable Island A -> Island B", "Disables a bridge."),
-            ("!Admin-Bridge-Status", "Displays bridge statuses."),
-        ],
-
-        "UTILITY": [
-            ("!ping", "Tests bot connection."),
-            ("!roles", "Displays all Discord roles."),
-            ("!Admin-Support", "Displays this general admin menu."),
-            ("!Admin-Support Inventory", "Displays the mobile-friendly inventory support menu."),
-        ],
-    }
-
-    message = '**Admin Support Commands**' + chr(10) + chr(10)
-
-    for section_name, commands_list in sections.items():
-        message += f"**{section_name}**" + chr(10)
-        message += "```txt" + chr(10)
-        message += f"{'Command':<40} Description" + chr(10)
-        message += "-" * 90 + chr(10)
-
-        for command_name, description in commands_list:
-            message += f"{command_name:<40} {description}" + chr(10)
-
-        message += "```" + chr(10) + chr(10)
-
+    )
     await send_long_message(ctx, message)
 
+
+@bot.command(name="action-support")
+async def action_support(ctx):
+    message = format_support_page(
+        "⏳ ACTION SUPPORT",
+        [
+            (
+                "👤 PLAYER COMMANDS",
+                [
+                    ("!search-item", "Search for an item using the shared action timer."),
+                    ("!search-food", "Search for food using the shared action timer."),
+                    ("!search-water", "Search for water using the shared action timer."),
+                    ("!craft", "Craft using the shared action timer."),
+                    ("!sleep", "Sleep using the current global cooldown and receive +3 sleep."),
+                    ("!reset-action", "Cancel your own active action while preserving its cooldown."),
+                ],
+            ),
+            (
+                "🛡️ ADMIN COMMANDS",
+                [
+                    ("!search-item-bypass", "Run an instant item test roll."),
+                    ("!search-food-bypass", "Run an instant food test roll."),
+                    ("!reset-action @player", "Cancel another tribute's active action."),
+                ],
+            ),
+        ],
+    )
+    await send_long_message(ctx, message)
+
+
+@bot.command(name="movement-support")
+async def movement_support(ctx):
+    message = format_support_page(
+        "🗺️ MOVEMENT SUPPORT",
+        [
+            (
+                "👤 PLAYER COMMANDS",
+                [
+                    ("!move Room Name", "Move to an available location."),
+                    ("!reset-action", "Cancel your own movement and return to the departure location."),
+                ],
+            ),
+            (
+                "ℹ️ NOTES",
+                [
+                    ("Cooldowns", "Same-island movement and island travel use the configured action cooldowns."),
+                    ("Closed paths", "Disabled rooms and bridges cannot be used for movement."),
+                ],
+            ),
+        ],
+    )
+    await send_long_message(ctx, message)
+
+
+@bot.command(name="room-support")
+async def room_support(ctx):
+    message = format_support_page(
+        "📍 ROOM SUPPORT",
+        [
+            (
+                "🛡️ ADMIN COMMANDS",
+                [
+                    ("!Admin-Disable Room Name", "Disable a room."),
+                    ("!Admin-Enable Room Name", "Enable a room."),
+                    ("!Admin-Room-Status", "View all room statuses."),
+                ],
+            ),
+        ],
+    )
+    await send_long_message(ctx, message)
+
+
+@bot.command(name="bridge-support")
+async def bridge_support(ctx):
+    message = format_support_page(
+        "🌉 BRIDGE SUPPORT",
+        [
+            (
+                "🛡️ ADMIN COMMANDS",
+                [
+                    (
+                        "!Admin-Bridge-Enable Island A -> Island B",
+                        "Enable a bridge between two islands.",
+                    ),
+                    (
+                        "!Admin-Bridge-Disable Island A -> Island B",
+                        "Disable a bridge between two islands.",
+                    ),
+                    ("!Admin-Bridge-Status", "View every bridge's current status."),
+                ],
+            ),
+        ],
+    )
+    await send_long_message(ctx, message)
+
+
+@bot.command(name="player-support")
+async def player_support(ctx):
+    message = format_support_page(
+        "👥 PLAYER SUPPORT",
+        [
+            (
+                "🛡️ ADMIN COMMANDS",
+                [
+                    ("!Admin-Broadcast", "View tribute locations, districts, and ailments."),
+                    ("!reset-action @player", "Cancel another tribute's current action."),
+                    ("!admin-inventory @player", "View another tribute's inventory."),
+                ],
+            ),
+        ],
+    )
+    await send_long_message(ctx, message)
+
+
+@bot.command(name="settings-support")
+async def settings_support(ctx):
+    current_default = get_guild_default_bag_total(ctx.guild.id)
+    message = format_support_page(
+        "⚙️ SETTINGS SUPPORT",
+        [
+            (
+                "🛡️ ADMIN COMMANDS",
+                [
+                    (
+                        "!item-cooldown <seconds>",
+                        "Set the global movement, search, craft, and sleep cooldown.",
+                    ),
+                    ("!item-cooldown reset", "Restore the default cooldown values."),
+                    (
+                        "!set-inventory <number>",
+                        f"Set the default bag size for new tributes. Current default: {current_default} slots.",
+                    ),
+                ],
+            ),
+        ],
+    )
+    await send_long_message(ctx, message)
+
+
+@bot.command(name="utility-support")
+async def utility_support(ctx):
+    message = format_support_page(
+        "🧪 UTILITY SUPPORT",
+        [
+            (
+                "COMMANDS",
+                [
+                    ("!ping", "Test whether the bot is responding."),
+                    ("!roles", "View the server's Discord roles."),
+                ],
+            ),
+            (
+                "SUPPORT PAGES",
+                [
+                    ("!inventory-support", "Inventory commands and settings."),
+                    ("!item-support", "Item tables, identifiers, and admin item tools."),
+                    ("!action-support", "Search, craft, sleep, and reset commands."),
+                    ("!movement-support", "Player movement guidance."),
+                    ("!room-support", "Admin room controls."),
+                    ("!bridge-support", "Admin bridge controls."),
+                    ("!player-support", "Admin player-management tools."),
+                    ("!settings-support", "Server-level configurable settings."),
+                ],
+            ),
+        ],
+    )
+    await send_long_message(ctx, message)
 
 
 @bot.command(name="reset-action")
