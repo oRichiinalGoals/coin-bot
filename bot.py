@@ -2722,9 +2722,25 @@ def format_support_page(title, sections):
     return "\n".join(lines).rstrip()
 
 
-@bot.command(name="inventory-support")
+@bot.command(
+    name="inventory_support",
+    aliases=["inventory-support", "inventorysupport", "inventory-help"],
+)
 async def inventory_support(ctx):
-    await send_long_message(ctx, format_inventory_support_message(ctx.guild.id))
+    """Show the dedicated inventory command help page."""
+    if ctx.guild is None:
+        await ctx.send("This command can only be used inside a server.")
+        return
+
+    try:
+        message = format_inventory_support_message(ctx.guild.id)
+        await send_long_message(ctx, message)
+    except Exception as error:
+        print(f"Inventory support command error: {error!r}")
+        await ctx.send(
+            "I couldn't load the inventory support menu. "
+            "Please ping the Gamemakers and check the bot console for the error."
+        )
 
 
 @bot.command(name="item-support")
